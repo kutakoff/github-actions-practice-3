@@ -5,6 +5,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
+env:
+  COMPOSE_PROJECT_NAME: practical3
+
 jobs:
   deploy-and-test:
     runs-on: self-hosted
@@ -12,6 +15,7 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
       - name: Create .env file
         env:
           DB_USER: ${{ secrets.DB_USER }}
@@ -33,7 +37,10 @@ jobs:
             echo "APP_SECRET=$APP_SECRET"
             echo "API_KEY=$API_KEY"
           } > .env
+
           chmod 600 .env
+
+          echo "Environment file created."
 
       - name: Check Docker
         run: docker --version
@@ -41,12 +48,189 @@ jobs:
       - name: Check Docker Compose
         run: docker compose version
 
+      - name: Validate Docker Compose configuration
+        run: docker compose config --quiet
+
       - name: Start containers
-        run: docker compose up -d
+        run: docker compose up -d --build
 
       - name: Check containers
-        run: docker compose ps
+        run: |
+          docker compose ps
 
-      - name: Stop containers
+          for service in db adminer app; do
+            container_id=$(docker compose ps -q "$service")
+
+            if [ -z "$container_id" ]; then
+              echo "ERROR: $service container not found"
+              exit 1
+            fi
+
+            status=$(docker inspect -f '{{.State.Status}}' "$container_id")
+
+            if [ "$status" != "running" ]; then
+              echo "ERROR: $service is not running"
+              exit 1
+            fi
+
+            echo "SUCCESS: $service is running"
+          done
+
+      - name: Test Flask application
+        run: |
+          echo "Waiting for Flask application..."
+
+          for i in {1..15}; do
+            if curl --fail --silent http://localhost:5001/api/items \
+              > /dev/null; then
+              echo "SUCCESS: Flask application is responding!"
+              exit 0
+            fi
+
+            echo "Attempt $i: application is not ready yet"
+            sleep 2
+          done
+
+          echo "ERROR: Flask application did not respond"
+          docker compose logs app
+          exit 1
+
+      - name: Compare PostgreSQL and web application data
+        env:
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+        run: |
+          echo "Getting data from PostgreSQL..."
+
+          docker compose exec -T db \
+            psql -U "$DB_USER" -d "$DB_NAME" \
+            -t -A -F ',' \
+            -c "SELECT id, name FROM items ORDER BY id;" \
+            > db_items.txt
+
+          echo "Getting data from Flask API..."
+
+          curl --fail --silent http://localhost:5001/api/items \
+            > api_items.json
+
+          echo "Getting HTML page..."
+
+          curl --fail --silent http://localhost:5001/ \
+            > web_page.html
+
+          echo "Comparing PostgreSQL, API and HTML data..."
+
+          python3 - <<'PY'
+          import json
+          from html.parser import HTMLParser
+
+
+          class ListItemParser(HTMLParser):
+              def __init__(self):
+                  super().__init__()
+                  self.inside_li = False
+                  self.items = []
+
+              def handle_starttag(self, tag, attrs):
+                  if tag == "li":
+                      self.inside_li = True
+
+              def handle_data(self, data):
+                  if self.inside_li:
+                      self.items.append(data.strip())
+
+              def handle_endtag(self, tag):
+                  if tag == "li":
+                      self.inside_li = False
+
+
+          with open("db_items.txt") as file:
+              db_items = [
+                  {"id": int(row[0]), "name": row[1]}
+                  for line in file if line.strip()
+                  for row in [line.strip().split(",", 1)]
+              ]
+
+          with open("api_items.json") as file:
+              api_items = json.load(file)
+
+          with open("web_page.html") as file:
+              html = file.read()
+
+          assert db_items, "Database contains no test records!"
+
+          assert db_items == api_items, (
+              f"Data mismatch!\n"
+              f"PostgreSQL: {db_items}\n"
+              f"API: {api_items}"
+          )
+
+          parser = ListItemParser()
+          parser.feed(html)
+
+          for item in db_items:
+              assert item["name"] in parser.items or any(
+                  item["name"] in text for text in parser.items
+              ), f"Item not displayed in HTML: {item['name']}"
+
+          print("SUCCESS: PostgreSQL and API data match!")
+          print("SUCCESS: Database records are displayed in HTML!")
+          print(f"Total records: {len(db_items)}")
+          PY
+
+      - name: Create test report
+        if: success()
+        run: |
+          {
+            echo "# Deployment Test Report"
+            echo ""
+            echo "- Date: $(date)"
+            echo "- Self-hosted runner: Active"
+            echo "- Docker Compose: Running"
+            echo "- Flask application: Responding"
+            echo "- PostgreSQL connection: Successful"
+            echo "- Database and API comparison: Passed"
+            echo "- HTML data verification: Passed"
+            echo ""
+            echo "## Docker containers"
+            echo '```'
+            docker compose ps
+            echo '```'
+          } > test-report.md
+
+          echo "Test report created."
+
+      - name: Save Docker logs
         if: always()
-        run: docker compose down
+        run: |
+          docker compose logs --no-color > deployment-logs.txt 2>&1 || true
+          docker compose ps > docker-ps.txt 2>&1 || true
+          docker images > docker-images.txt 2>&1 || true
+
+          echo "Docker diagnostic files created."
+
+      - name: Save environment variable names
+        if: always()
+        run: |
+          if [ -f .env ]; then
+            sed 's/=.*/=***MASKED***/' .env > env-masked.txt
+          else
+            echo "Environment file was not created." > env-masked.txt
+          fi
+
+      - name: Upload deployment artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-artifacts-${{ github.run_id }}
+          path: |
+            test-report.md
+            deployment-logs.txt
+            docker-ps.txt
+            docker-images.txt
+            env-masked.txt
+            db_items.txt
+            api_items.json
+            web_page.html
+          retention-days: 30
+          if-no-files-found: warn

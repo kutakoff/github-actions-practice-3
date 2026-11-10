@@ -25,5 +25,21 @@ services:
       db:
         condition: service_healthy
 
+  app:
+    build: ./app
+    container_name: practical3-app
+    environment:
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      APP_PORT: 5000
+    ports:
+      - "5001:5000"
+    depends_on:
+      db:
+        condition: service_healthy
+
 volumes:
   postgres_data:
