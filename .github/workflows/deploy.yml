@@ -12,6 +12,28 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+      - name: Create .env file
+        env:
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_PORT: ${{ secrets.DB_PORT }}
+          APP_PORT: ${{ secrets.APP_PORT }}
+          APP_SECRET: ${{ secrets.APP_SECRET }}
+          API_KEY: ${{ secrets.API_KEY }}
+        run: |
+          {
+            echo "DB_USER=$DB_USER"
+            echo "DB_PASSWORD=$DB_PASSWORD"
+            echo "DB_NAME=$DB_NAME"
+            echo "DB_HOST=$DB_HOST"
+            echo "DB_PORT=$DB_PORT"
+            echo "APP_PORT=$APP_PORT"
+            echo "APP_SECRET=$APP_SECRET"
+            echo "API_KEY=$API_KEY"
+          } > .env
+          chmod 600 .env
 
       - name: Check Docker
         run: docker --version
