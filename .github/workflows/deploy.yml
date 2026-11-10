@@ -1,0 +1,17 @@
+name: Full Stack Application Deployment Test
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  COMPOSE_PROJECT_NAME: myapp
+
+jobs:
+  deploy-and-test:
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
